@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Arquitectura de Mixtral-8x22B, la base de 360Brew de LinkedIn, verificada con REA.">
+<meta property="og:title" content="Anatomía de 360Brew">
+<meta property="og:description" content="Cómo es por dentro el modelo base de 360Brew de LinkedIn y cómo puntúa un post.">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>
+<title>Anatomía de 360Brew</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a technical manifest. Narrow reading column, wide figures breaking out, mono for every tensor fact. */
+:root{
+  --paper:#f3f5f7; --sheet:#ffffff; --ink:#14202e; --muted:#5a6878; --rule:#d5dce4;
+  --expert:#2f5d8a; --attn:#b4632a; --router:#c2283f; --embed:#6b7f3a; --soft:#e7edf3;
+  --display:"Bricolage Grotesque", "Avenir Next", "Segoe UI", sans-serif;
+  --body:"Source Serif 4", Georgia, "Times New Roman", serif;
+  --mono:"IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --paper:#0f151c; --sheet:#16202b; --ink:#e4eaf1; --muted:#97a6b6; --rule:#2a3846;
+  --expert:#7fb0e0; --attn:#e69a63; --router:#ff6b7f; --embed:#b1c97a; --soft:#1d2a37; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --paper:#0f151c; --sheet:#16202b; --ink:#e4eaf1; --muted:#97a6b6; --rule:#2a3846;
+  --expert:#7fb0e0; --attn:#e69a63; --router:#ff6b7f; --embed:#b1c97a; --soft:#1d2a37; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font-family:var(--body);font-size:17px;line-height:1.6;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:40px 72px}
+.wrap{max-width:1080px;margin:0 auto;display:flex;flex-direction:column;gap:64px}
+.col{max-width:68ch}
+h1,h2,h3{font-family:var(--display);line-height:1.1;text-wrap:balance;margin:0}
+h1{font-size:clamp(2.2rem,6vw,3.6rem);font-weight:800;letter-spacing:-.02em}
+h2{font-size:clamp(1.5rem,3.4vw,2.1rem);font-weight:700;letter-spacing:-.01em}
+h3{font-size:1.15rem;font-weight:700}
+p{margin:0}
+.stack{display:flex;flex-direction:column;gap:16px}
+.eyebrow{font-family:var(--mono);font-size:.75rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.mono{font-family:var(--mono);font-size:.88em}
+.muted{color:var(--muted)}
+.tag{display:inline-block;font-family:var(--mono);font-size:.7rem;letter-spacing:.06em;text-transform:uppercase;padding:2px 8px;border-radius:3px;border:1px solid var(--rule);color:var(--muted)}
+.tag.obs{border-color:var(--expert);color:var(--expert)}
+.tag.der{border-color:var(--attn);color:var(--attn)}
+.tag.ilu{border-color:var(--router);color:var(--router)}
+header .stack{gap:20px}
+.lede{font-size:1.2rem;max-width:60ch}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1px;background:var(--rule);border:1px solid var(--rule);font-variant-numeric:tabular-nums}
+.facts div{background:var(--sheet);padding:14px 16px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.facts b{font-family:var(--display);font-size:1.6rem;font-weight:700}
+.facts span{font-family:var(--mono);font-size:.75rem;color:var(--muted)}
+/* proportion bar */
+.bar{display:flex;height:56px;border:1px solid var(--rule);background:var(--sheet)}
+.bar i{display:block;height:100%}
+.legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px 24px;font-variant-numeric:tabular-nums}
+.legend div{display:flex;gap:10px;align-items:baseline;min-width:0}
+.sw{width:12px;height:12px;flex:none;border-radius:2px;transform:translateY(1px)}
+.legend b{font-family:var(--mono);font-weight:500}
+.zoom{font-family:var(--mono);font-size:.8rem;color:var(--muted);border-left:3px solid var(--router);padding-left:12px}
+/* layer explorer */
+.panel{background:var(--sheet);border:1px solid var(--rule);padding:24px;display:flex;flex-direction:column;gap:20px}
+.layers{display:grid;grid-template-columns:repeat(28,1fr);gap:3px}
+.layers button{aspect-ratio:1;border:0;padding:0;background:var(--soft);border-radius:2px;cursor:pointer;max-width:100%}
+.layers button[aria-pressed="true"]{background:var(--expert)}
+.layers button:focus-visible,.tokens button:focus-visible,.chip:focus-visible{outline:2px solid var(--router);outline-offset:2px}
+.tokens{display:flex;flex-wrap:wrap;gap:6px}
+.tokens button{font-family:var(--mono);font-size:.85rem;border:1px solid var(--rule);background:var(--paper);color:var(--ink);padding:4px 8px;border-radius:3px;cursor:pointer}
+.tokens button[aria-pressed="true"]{border-color:var(--router);color:var(--router)}
+.block{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}
+.step{display:grid;grid-template-columns:150px minmax(0,1fr);gap:14px;align-items:center;border-top:1px dashed var(--rule);padding-top:10px}
+.step .k{font-family:var(--display);font-weight:700}
+.step .v{font-family:var(--mono);font-size:.8rem;color:var(--muted);overflow-wrap:anywhere}
+.experts{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px}
+.ex{border:1px solid var(--rule);border-radius:3px;padding:8px 4px;text-align:center;font-family:var(--mono);font-size:.75rem;color:var(--muted);transition:background-color .2s,color .2s}
+.ex.on{background:var(--expert);border-color:var(--expert);color:var(--sheet)}
+.ex small{display:block;font-size:.65rem}
+/* ranking flow */
+.flow{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;counter-reset:f}
+.flow li{list-style:none;background:var(--sheet);border:1px solid var(--rule);padding:16px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.flow li::before{counter-increment:f;content:"Paso " counter(f);font-family:var(--mono);font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--attn)}
+.flow{padding:0;margin:0}
+pre.prompt{margin:0;background:var(--sheet);border:1px solid var(--rule);border-left:3px solid var(--attn);padding:18px;font-family:var(--mono);font-size:.8rem;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ink)}
+pre.prompt em{font-style:normal;color:var(--attn)}
+pre.prompt strong{color:var(--router);font-weight:500}
+.score{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;font-variant-numeric:tabular-nums}
+.srow{display:grid;grid-template-columns:minmax(0,13rem) minmax(0,1fr) 4rem;gap:12px;align-items:center;font-size:.92rem}
+.track{height:12px;background:var(--soft);border-radius:2px;overflow:hidden}
+.track i{display:block;height:100%;background:var(--expert)}
+.srow .n{font-family:var(--mono);text-align:right}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px}
+.two>*{min-width:0}
+/* table */
+.tbl{overflow-x:auto;border:1px solid var(--rule);background:var(--sheet)}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums;font-size:.85rem}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--rule);white-space:nowrap}
+th{font-family:var(--mono);font-weight:500;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+td.r,th.r{text-align:right}
+td code{font-family:var(--mono);font-size:.8rem}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px}
+/* use cases */
+.filters{display:flex;flex-wrap:wrap;gap:8px}
+.chip{font-family:var(--mono);font-size:.78rem;border:1px solid var(--rule);background:var(--sheet);color:var(--ink);padding:6px 12px;border-radius:999px;cursor:pointer;transition:border-color .2s,color .2s}
+.chip[aria-pressed="true"]{border-color:var(--expert);color:var(--expert)}
+.cases{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+.case{background:var(--sheet);border:1px solid var(--rule);padding:20px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.case .q{font-family:var(--mono);font-size:.78rem;background:var(--paper);padding:10px;border-radius:3px;color:var(--ink);overflow-wrap:anywhere}
+.case .meta{display:flex;flex-wrap:wrap;gap:6px}
+.case p{font-size:.95rem}
+.sizes{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1px;background:var(--rule);border:1px solid var(--rule)}
+.sizes div{background:var(--sheet);padding:16px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.sizes b{font-family:var(--display);font-size:1.1rem}
+footer{border-top:1px solid var(--rule);padding-top:24px;font-size:.88rem;color:var(--muted);display:flex;flex-direction:column;gap:8px}
+footer code{font-family:var(--mono);font-size:.78rem;overflow-wrap:anywhere}
+@media (max-width:640px){
+  .layers{grid-template-columns:repeat(14,1fr)}
+  .step{grid-template-columns:minmax(0,1fr);gap:4px}
+  .experts{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .srow{grid-template-columns:minmax(0,1fr) 3.5rem}.srow .track{grid-column:1/-1;grid-row:2}
+  .panel{padding:16px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<header class="stack">
+  <span class="eyebrow">Ingeniería inversa · REA · octubre 2026</span>
+  <h1>Anatomía de 360Brew</h1>
+  <p class="lede">LinkedIn construyó su modelo de ranking 360Brew sobre <strong>Mixtral-8x22B</strong>, un modelo abierto de Mistral AI. Con REA inspeccionamos las cabeceras de sus 59 archivos de pesos, sin descargar los 281 GB, y dibujamos aquí su esqueleto y la forma en que puntúa un post.</p>
+  <div class="facts">
+    <div><b>140,6 mil M</b><span>parámetros declarados</span></div>
+    <div><b>~39,2 mil M</b><span>activos por token</span></div>
+    <div><b>56</b><span>capas</span></div>
+    <div><b>8 → 2</b><span>expertos por capa / activos</span></div>
+    <div><b>65.536</b><span>tokens de contexto</span></div>
+    <div><b>1.739</b><span>tensores BF16, todos consistentes</span></div>
+  </div>
+  <p class="muted" style="font-size:.9rem">Etiquetas: <span class="tag obs">observado</span> lo leyó REA en los archivos · <span class="tag der">derivado</span> calculado de lo observado · <span class="tag ilu">ilustrativo</span> ejemplo para explicar, no datos reales.</p>
+</header>
+
+<section class="stack">
+  <span class="eyebrow">01 · Proporciones a escala</span>
+  <h2>El 96 % del modelo son expertos</h2>
+  <p class="col">Cada franja mide exactamente su parte del total de parámetros. Los enrutadores, que deciden qué experto trabaja en cada palabra, son tan pequeños que no se ven a esta escala. <span class="tag der">derivado</span></p>
+  <div class="bar" role="img" aria-label="Expertos 96,2 por ciento, atención 3,5 por ciento, embeddings 0,28 por ciento, enrutadores 0,002 por ciento">
+    <i style="width:96.21%;background:var(--expert)"></i>
+    <i style="width:3.51%;background:var(--attn)"></i>
+    <i style="width:0.28%;background:var(--embed)"></i>
+  </div>
+  <div class="legend">
+    <div><span class="sw" style="background:var(--expert)"></span><span><b>135,29 mil M · 96,21 %</b><br>Expertos (448 = 56 × 8)</span></div>
+    <div><span class="sw" style="background:var(--attn)"></span><span><b>4,93 mil M · 3,51 %</b><br>Atención (q, k, v, o)</span></div>
+    <div><span class="sw" style="background:var(--embed)"></span><span><b>0,39 mil M · 0,28 %</b><br>Embeddings + capa de salida</span></div>
+    <div><span class="sw" style="background:var(--router)"></span><span><b>2,75 M · 0,002 %</b><br>Enrutadores (56 × [8, 6144])</span></div>
+  </div>
+  <p class="zoom">Ampliado: si la barra midiera 1 km, los enrutadores ocuparían unos 2 cm.</p>
+</section>
+
+<section class="stack">
+  <span class="eyebrow">02 · Recorrido por una capa</span>
+  <h2>Qué pasa con cada palabra</h2>
+  <p class="col">Elige una capa (son 56) y una palabra del prompt. Cada capa hace lo mismo: normaliza, mira el resto del texto con atención, y el enrutador manda la palabra a 2 de sus 8 expertos. Las formas de los tensores son las que leyó REA. <strong>La elección de expertos es una simulación:</strong> REA no interpreta pesos, así que no sabemos qué expertos elegiría el modelo real.</p>
+  <div class="panel">
+    <div class="stack" style="gap:8px">
+      <span class="eyebrow" id="layerLabel">Capa 1 de 56</span>
+      <div class="layers" id="layers" role="group" aria-label="Capas del modelo"></div>
+    </div>
+    <div class="stack" style="gap:8px">
+      <span class="eyebrow">Palabra del prompt</span>
+      <div class="tokens" id="tokens" role="group" aria-label="Palabras del prompt"></div>
+    </div>
+    <div class="block" aria-live="polite">
+      <div class="step"><span class="k">1 · Normalización</span><span class="v">input_layernorm [6144] · RMSNorm, eps 1e-5</span></div>
+      <div class="step"><span class="k" style="color:var(--attn)">2 · Atención</span><span class="v">q_proj [6144, 6144] · k_proj [1024, 6144] · v_proj [1024, 6144] · o_proj [6144, 6144]<br>48 cabezas de consulta comparten 8 de clave/valor: la palabra "mira" el perfil, el historial y el post</span></div>
+      <div class="step"><span class="k">3 · Normalización</span><span class="v">post_attention_layernorm [6144]</span></div>
+      <div class="step"><span class="k" style="color:var(--router)">4 · Enrutador</span><span class="v">gate [8, 6144] → 8 puntajes → se quedan los 2 más altos <span class="tag ilu">ilustrativo</span> <span id="gateOut"></span></span></div>
+      <div class="step"><span class="k" style="color:var(--expert)">5 · Expertos</span><div class="experts" id="experts"></div></div>
+      <div class="step"><span class="k">6 · Suma residual</span><span class="v">salida = entrada + atención + (peso₁ · experto₁ + peso₂ · experto₂)</span></div>
+    </div>
+    <p class="muted" style="font-size:.88rem">Cada experto: w1 [16384, 6144], w3 [16384, 6144], w2 [6144, 16384] · 302 M parámetros. Solo 2 de 8 trabajan por palabra, por eso de 140,6 mil M se usan ~39,2 mil M en cada paso. <span class="tag der">derivado</span></p>
+  </div>
+</section>
+
+<section class="stack">
+  <span class="eyebrow">03 · El modelo como ranker</span>
+  <h2>Cómo puntúa un post</h2>
+  <p class="col">El paper de 360Brew no agrega una "cabeza de ranking": convierte la tarea en texto y lee la probabilidad de la respuesta. Este es el formato que describe, aplicado a un caso del feed construido con lo que encontramos en la captura. Perfil, historial y puntajes son <span class="tag ilu">ilustrativo</span>.</p>
+  <div class="two">
+    <pre class="prompt"><em>Instrucción:</em> Se te da el perfil de un miembro y los posts con los que interactuó. Predice si dará like al post "Pregunta".
+
+<em>Perfil del miembro:</em> Senior Backend Engineer · Bogotá · Software Development
+
+<em>Historial (solo interacciones positivas):</em>
+- Comentó: "Si tuviera 6 meses para ser ingeniero backend…"
+- Le dio like: "En su próxima entrevista no le preguntarán…"
+- Leyó 19 s: video de operaciones en Amazon
+
+<em>Pregunta:</em> ¿Dará like a este post?
+[Autor: 3er grado · Idioma: es · Formato: texto]
+[Reacción visible: "Amazon le gustó"]
+[<strong>&lt;view_percentile&gt;71&lt;/view_percentile&gt;</strong>]
+"Atención: no se desespere si sos fullstack…"
+
+<em>Respuesta:</em> <strong>Sí</strong></pre>
+    <div class="stack">
+      <ol class="flow">
+        <li><h3>Texto a tokens</h3><p>Todo el prompt se vuelve tokens del vocabulario de 32.000. Los conteos entran como percentil, no como cifra exacta.</p></li>
+        <li><h3>56 capas</h3><p>Cada token pasa por atención y 2 expertos por capa. Aquí se cruzan el historial del lector y el post.</p></li>
+        <li><h3>Logit de la respuesta</h3><p>La capa de salida [32000, 6144] da un puntaje a "Sí" y otro a "No". P(like) sale de comparar esos dos.</p></li>
+        <li><h3>Orden del feed</h3><p>Se repite para cada acción (like, comentario, compartir) y cada post candidato. Los puntajes combinados ordenan el feed.</p></li>
+      </ol>
+      <div class="panel" style="gap:12px">
+        <span class="eyebrow">Puntajes de ejemplo <span class="tag ilu">ilustrativo</span></span>
+        <div class="score">
+          <div class="srow"><span>P(like) · post de carrera, es</span><div class="track"><i style="width:62%"></i></div><span class="n">0,62</span></div>
+          <div class="srow"><span>P(like) · post con hashtags, en</span><div class="track"><i style="width:18%"></i></div><span class="n">0,18</span></div>
+          <div class="srow"><span>P(comentar) · post de carrera, es</span><div class="track"><i style="width:21%"></i></div><span class="n">0,21</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="col muted" style="font-size:.92rem">Según el blog de ingeniería de LinkedIn de 2026, el feed en producción usa una variante: un LLM convierte personas y posts en vectores para <em>recuperar</em> candidatos por cercanía temática, y un transformer secuencial (Generative Recommender) los <em>ordena</em> prediciendo clic, like, comentario y compartido. La idea central se mantiene: el texto decide.</p>
+</section>
+
+<section class="stack">
+  <span class="eyebrow">04 · Manifiesto de tensores</span>
+  <h2>Lo que leyó REA</h2>
+  <p class="col">Los 1.739 tensores agrupados por función. Nombres, formas y tipos son <span class="tag obs">observado</span> en las 59 cabeceras. Los parámetros se calculan de las formas declaradas.</p>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>Tensor</th><th>Forma</th><th class="r">Cantidad</th><th class="r">Parámetros</th><th class="r">% total</th></tr></thead>
+      <tbody>
+        <tr><td><span class="dot" style="background:var(--expert)"></span><code>experts.N.w1</code></td><td><code>[16384, 6144]</code></td><td class="r">448</td><td class="r">45.097 M</td><td class="r">32,07</td></tr>
+        <tr><td><span class="dot" style="background:var(--expert)"></span><code>experts.N.w2</code></td><td><code>[6144, 16384]</code></td><td class="r">448</td><td class="r">45.097 M</td><td class="r">32,07</td></tr>
+        <tr><td><span class="dot" style="background:var(--expert)"></span><code>experts.N.w3</code></td><td><code>[16384, 6144]</code></td><td class="r">448</td><td class="r">45.097 M</td><td class="r">32,07</td></tr>
+        <tr><td><span class="dot" style="background:var(--attn)"></span><code>self_attn.q_proj</code></td><td><code>[6144, 6144]</code></td><td class="r">56</td><td class="r">2.114 M</td><td class="r">1,50</td></tr>
+        <tr><td><span class="dot" style="background:var(--attn)"></span><code>self_attn.o_proj</code></td><td><code>[6144, 6144]</code></td><td class="r">56</td><td class="r">2.114 M</td><td class="r">1,50</td></tr>
+        <tr><td><span class="dot" style="background:var(--attn)"></span><code>self_attn.k_proj</code></td><td><code>[1024, 6144]</code></td><td class="r">56</td><td class="r">352 M</td><td class="r">0,25</td></tr>
+        <tr><td><span class="dot" style="background:var(--attn)"></span><code>self_attn.v_proj</code></td><td><code>[1024, 6144]</code></td><td class="r">56</td><td class="r">352 M</td><td class="r">0,25</td></tr>
+        <tr><td><span class="dot" style="background:var(--embed)"></span><code>embed_tokens</code></td><td><code>[32000, 6144]</code></td><td class="r">1</td><td class="r">197 M</td><td class="r">0,14</td></tr>
+        <tr><td><span class="dot" style="background:var(--embed)"></span><code>lm_head</code></td><td><code>[32000, 6144]</code></td><td class="r">1</td><td class="r">197 M</td><td class="r">0,14</td></tr>
+        <tr><td><span class="dot" style="background:var(--router)"></span><code>block_sparse_moe.gate</code></td><td><code>[8, 6144]</code></td><td class="r">56</td><td class="r">2,75 M</td><td class="r">0,002</td></tr>
+        <tr><td><span class="dot" style="background:var(--muted)"></span><code>input / post_attention_layernorm</code></td><td><code>[6144]</code></td><td class="r">112</td><td class="r">0,69 M</td><td class="r">&lt;0,001</td></tr>
+        <tr><td><span class="dot" style="background:var(--muted)"></span><code>model.norm</code></td><td><code>[6144]</code></td><td class="r">1</td><td class="r">0,006 M</td><td class="r">&lt;0,001</td></tr>
+        <tr><th>Total</th><th></th><th class="r">1.739</th><th class="r">140.620,6 M</th><th class="r">100</th></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="col muted" style="font-size:.92rem">360Brew declara 150 mil M. La diferencia de ~9,4 mil M no se explica ampliando el vocabulario: haría falta agregar unos 763 mil tokens. LinkedIn cambió algo que no es público. <span class="tag der">derivado</span></p>
+</section>
+
+<section class="stack">
+  <span class="eyebrow">05 · Más allá de LinkedIn</span>
+  <h2>Otros usos de un modelo como Mixtral</h2>
+  <p class="col">El patrón de 360Brew sirve en cualquier lugar donde la decisión dependa de texto: describir a la persona, su historial y el candidato, y leer la probabilidad de la respuesta. Mixtral tiene licencia Apache 2.0, así que se puede ajustar (fine-tuning o LoRA) con datos propios y servirlo en infraestructura propia.</p>
+  <div class="filters" role="group" aria-label="Filtrar casos de uso">
+    <button class="chip" aria-pressed="true" data-f="all">Todos</button>
+    <button class="chip" aria-pressed="false" data-f="rank">Ranking y recomendación</button>
+    <button class="chip" aria-pressed="false" data-f="clasif">Clasificación</button>
+    <button class="chip" aria-pressed="false" data-f="busq">Búsqueda</button>
+  </div>
+  <div class="cases" id="cases"></div>
+  <h3>Elegir el tamaño</h3>
+  <div class="sizes">
+    <div><b>Mixtral-8x22B</b><span class="mono muted">140,6 mil M · ~39 mil M activos · 281 GB en BF16</span><p>La base de 360Brew. Necesita varias GPU de alta memoria. Tiene sentido como "maestro" para entrenar modelos menores.</p></div>
+    <div><b>Mixtral-8x7B</b><span class="mono muted">46,7 mil M · ~12,9 mil M activos</span><p>Misma arquitectura de expertos a menor costo. Un punto de partida razonable para un prototipo de ranking.</p></div>
+    <div><b>Mistral 7B</b><span class="mono muted">7,24 mil M · denso</span><p>Cabe en una GPU. Útil para clasificar a gran volumen o como modelo destilado de uno grande.</p></div>
+  </div>
+  <p class="col muted" style="font-size:.92rem">Mismo camino que siguió LinkedIn: probar con el modelo grande y destilar a uno pequeño para servir en milisegundos. Los casos que deciden sobre personas (empleo, crédito, salud) requieren auditoría de sesgo y cumplimiento normativo antes de cualquier uso.</p>
+</section>
+
+<footer>
+  <span class="eyebrow">Procedencia</span>
+  <p>Fuente: <code>mistralai/Mixtral-8x22B-v0.1</code> (Apache 2.0). REA <code>inspect_model_artifact</code> en modo cabecera sobre los 59 safetensors reconstruidos con su tamaño exacto. Cobertura de cabecera, rangos y tamaños: completa en los 59 archivos. Contenido de los pesos: no interpretado. Ejemplo de cabecera, archivo 1: <code>sha256 d4e9c412dac57550bfe7d99cf92fa84d36a7337179218cfc081250c405876129</code>.</p>
+  <p>Contexto: paper "360Brew: A Decoder-only Foundation Model for Personalized Ranking and Recommendation" (LinkedIn, arXiv 2501.16450, retirado) y el blog de ingeniería de LinkedIn "Engineering the next generation of LinkedIn's Feed" (2026), leído a través del resumen de ByteByteGo. LinkedIn no confirma que 360Brew ordene el feed en producción. Los pesos de 360Brew no son públicos.</p>
+</footer>
+</div>
+
+<script>
+(function(){
+  var L=56, layer=0, tok=0;
+  var words=["Senior","Backend","Bogotá","Comentó","entrevista","fullstack","Amazon","<view_percentile>","71","Sí"];
+  var roles=["experto 0","experto 1","experto 2","experto 3","experto 4","experto 5","experto 6","experto 7"];
+  var lw=document.getElementById("layers"), tw=document.getElementById("tokens"), ew=document.getElementById("experts");
+  for(var i=0;i<L;i++){var b=document.createElement("button");b.type="button";b.id="layer-"+i;b.setAttribute("aria-label","Capa "+(i+1));b.dataset.i=i;lw.appendChild(b)}
+  words.forEach(function(w,i){var b=document.createElement("button");b.type="button";b.id="tok-"+i;b.textContent=w;b.dataset.i=i;tw.appendChild(b)});
+  for(var e=0;e<8;e++){var d=document.createElement("div");d.className="ex";d.innerHTML="E"+e+"<small>302 M</small>";ew.appendChild(d)}
+  function hash(s){var h=2166136261;for(var i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)}return h>>>0}
+  function render(){
+    [].forEach.call(lw.children,function(b,i){b.setAttribute("aria-pressed",i===layer?"true":"false")});
+    [].forEach.call(tw.children,function(b,i){b.setAttribute("aria-pressed",i===tok?"true":"false")});
+    document.getElementById("layerLabel").textContent="Capa "+(layer+1)+" de 56";
+    var scores=[];for(var k=0;k<8;k++)scores.push((hash(words[tok]+"|"+layer+"|"+k)%1000)/1000);
+    var order=scores.map(function(s,i){return[i,s]}).sort(function(a,b){return b[1]-a[1]});
+    var top=[order[0][0],order[1][0]];
+    var a=Math.exp(order[0][1]*4),c=Math.exp(order[1][1]*4),w1=a/(a+c);
+    [].forEach.call(ew.children,function(d,i){d.classList.toggle("on",top.indexOf(i)>=0)});
+    document.getElementById("gateOut").textContent="→ E"+top[0]+" ("+w1.toFixed(2).replace(".",",")+") + E"+top[1]+" ("+(1-w1).toFixed(2).replace(".",",")+")";
+  }
+  lw.addEventListener("click",function(ev){var b=ev.target.closest("button");if(b){layer=+b.dataset.i;render()}});
+  tw.addEventListener("click",function(ev){var b=ev.target.closest("button");if(b){tok=+b.dataset.i;render()}});
+  render();
+
+  var cases=[
+    {f:"rank",t:"E-commerce: productos recomendados",q:"Cliente: compró zapatillas trail, vio mochilas. ¿Comprará este producto? → Sí / No",p:"Ordena catálogos por probabilidad de compra y resuelve productos nuevos sin historial, porque lee la descripción.",m:["ranking","arranque en frío"]},
+    {f:"rank",t:"Empleo: vacantes para candidatos",q:"Perfil + vacantes vistas/postuladas. ¿Se postulará a esta vacante? → Sí / No",p:"Es el ejemplo exacto del paper de 360Brew. Exige auditoría de sesgo: decide sobre oportunidades de personas.",m:["ranking","alto riesgo"]},
+    {f:"rank",t:"Medios: noticias y contenido",q:"Lector: leyó 3 notas de energía, ignoró deportes. ¿Leerá esta nota más de 30 s? → Sí / No",p:"Personaliza portadas y newsletters por tema e intención de lectura, no solo por clics.",m:["ranking","tiempo de lectura"]},
+    {f:"rank",t:"Publicidad: relevancia de anuncios",q:"Usuario + anuncio + historial. ¿Hará clic? → Sí / No",p:"Predice CTR leyendo el texto del anuncio. Sirve para descartar creatividades antes de pagar por pruebas.",m:["ranking","CTR"]},
+    {f:"clasif",t:"Soporte: triage de tickets",q:"Ticket del cliente. ¿Área: facturación, técnico o cuenta? ¿Urgente?",p:"Enruta y prioriza tickets en el idioma del cliente. Un modelo pequeño destilado basta para el volumen.",m:["clasificación","multilingüe"]},
+    {f:"clasif",t:"Moderación de contenido",q:"Post + políticas del sitio. ¿Infringe la política X? → Sí / No",p:"Aplica reglas escritas en lenguaje natural y se actualiza cambiando el texto de la política, sin reentrenar.",m:["clasificación","políticas"]},
+    {f:"clasif",t:"Finanzas: categorizar transacciones",q:"Descripción del cargo + historial del cliente. ¿Categoría?",p:"Interpreta descripciones ambiguas de comercios. En decisiones de crédito aplica regulación estricta.",m:["clasificación","alto riesgo"]},
+    {f:"busq",t:"Búsqueda: reordenar resultados",q:"Consulta + documento. ¿El documento responde la consulta? → puntaje",p:"Reordena los 50 primeros resultados de un buscador o de un sistema RAG por relevancia real, no por palabras clave.",m:["búsqueda","RAG"]},
+    {f:"busq",t:"Embeddings para recuperar candidatos",q:"Persona y documentos convertidos a vectores en el mismo espacio",p:"Lo que LinkedIn hace en 2026: un LLM produce vectores y la búsqueda por cercanía trae candidatos en milisegundos.",m:["búsqueda","dual encoder"]}
+  ];
+  var cw=document.getElementById("cases");
+  function drawCases(f){
+    cw.innerHTML="";
+    cases.filter(function(c){return f==="all"||c.f===f}).forEach(function(c){
+      var el=document.createElement("article");el.className="case";
+      el.innerHTML="<h3></h3><div class='q'></div><p></p><div class='meta'></div>";
+      el.querySelector("h3").textContent=c.t;el.querySelector(".q").textContent=c.q;el.querySelector("p").textContent=c.p;
+      c.m.forEach(function(m){var s=document.createElement("span");s.className="tag"+(m==="alto riesgo"?" ilu":"");s.textContent=m;el.querySelector(".meta").appendChild(s)});
+      cw.appendChild(el)});
+  }
+  document.querySelectorAll(".chip").forEach(function(ch){ch.addEventListener("click",function(){
+    document.querySelectorAll(".chip").forEach(function(o){o.setAttribute("aria-pressed","false")});
+    ch.setAttribute("aria-pressed","true");drawCases(ch.dataset.f)})});
+  drawCases("all");
+})();
+</script>
+</body>
+</html>
